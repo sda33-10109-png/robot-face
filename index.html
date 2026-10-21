@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sheriff Robot View</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1220; --panel:#121c2c; --line:#29384b; --green:#42f5a1; --muted:#9aabc0; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:#edf4ff; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
+    header { padding:22px 24px 12px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    h1 { margin:0; font-size:clamp(20px,3vw,30px); letter-spacing:.08em; }
+    .sub { margin-top:5px; color:var(--muted); font-size:13px; }
+    .pill { border:1px solid #286e54; color:var(--green); border-radius:99px; padding:6px 11px; font-size:12px; white-space:nowrap; }
+    main { display:grid; grid-template-columns:minmax(0,1.8fr) minmax(260px,1fr); gap:16px; padding:12px 24px 24px; max-width:1500px; margin:auto; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:16px; overflow:hidden; }
+    .view { position:relative; min-height:280px; background:#050a11; aspect-ratio:4/3; }
+    video, canvas { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+    video { transform:scaleX(-1); }
+    canvas { pointer-events:none; }
+    .placeholder { position:absolute; inset:0; display:grid; place-items:center; color:var(--muted); text-align:center; padding:20px; }
+    .controls { padding:14px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+    button { border:0; border-radius:10px; padding:10px 15px; font-weight:700; cursor:pointer; background:var(--green); color:#062015; }
+    button.secondary { background:#26364a; color:#e8f1ff; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    #message { color:var(--muted); font-size:13px; flex:1 1 100%; line-height:1.5; }
+    .telemetry { padding:18px; }
+    .telemetry h2 { font-size:15px; margin:0 0 4px; letter-spacing:.06em; }
+    .telemetry .sub { margin-bottom:16px; }
+    .metric { padding:12px 0; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:12px; }
+    .metric:last-of-type { border-bottom:0; }
+    .label { color:var(--muted); font-size:12px; }
+    .value { font-size:clamp(17px,2vw,23px); font-weight:750; font-variant-numeric:tabular-nums; text-align:right; }
+    .green { color:var(--green); }
+    .foot { padding:0 18px 18px; color:var(--muted); font-size:12px; line-height:1.6; }
+    @media (max-width:850px) { main { grid-template-columns:1fr; padding:10px 12px 20px; } header { padding:18px 12px 8px; } .view { aspect-ratio:4/3; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>SHERIFF ROBOT</h1>
+      <div class="sub">LIVE FACE TELEMETRY · Browser edition</div>
+    </div>
+    <span class="pill" id="liveBadge">OFFLINE</span>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="view">
+        <video id="video" playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <div class="placeholder" id="placeholder">카메라를 시작하면 얼굴 추적 영상이 여기에 표시됩니다.</div>
+      </div>
+      <div class="controls">
+        <button id="startBtn">카메라 시작</button>
+        <button id="stopBtn" class="secondary" disabled>중지</button>
+        <div id="message">카메라 권한을 허용해 주세요. 카메라는 이 브라우저에서 처리됩니다.</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="telemetry">
+        <h2>FACE TELEMETRY</h2>
+        <div class="sub">화면 중앙 기준 좌표 · 회전 추정</div>
+        <div class="metric"><div><div class="label">STATUS</div></div><div class="value green" id="status">대기 중</div></div>
+        <div class="metric"><div><div class="label">X POSITION</div><div class="label">왼쪽 − / 오른쪽 +</div></div><div class="value" id="xPos">—</div></div>
+        <div class="metric"><div><div class="label">Y POSITION</div><div class="label">위쪽 + / 아래쪽 −</div></div><div class="value" id="yPos">—</div></div>
+        <div class="metric"><div><div class="label">YAW</div><div class="label">좌우 회전 (근사)</div></div><div class="value" id="yaw">—</div></div>
+        <div class="metric"><div><div class="label">PITCH</div><div class="label">상하 회전 (근사)</div></div><div class="value" id="pitch">—</div></div>
+        <div class="metric"><div><div class="label">ROLL</div><div class="label">기울기 (근사)</div></div><div class="value" id="roll">—</div></div>
+        <div class="metric"><div><div class="label">DISTANCE INDEX</div><div class="label">상대 지표 · 실제 cm/m 아님</div></div><div class="value" id="distance">—</div></div>
+      </div>
+      <div class="foot">
+        X/Y는 화면 안에서 정규화한 위치값입니다. 회전 각도는 얼굴 변환 행렬을 이용한 근사값이며 카메라/브라우저 환경에 따라 축 방향이 달라질 수 있습니다.
+        거리 지표는 얼굴 크기 변화로 계산하므로 실제 거리 측정값이 아닙니다.
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { FaceLandmarker, FilesetResolver } from
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("overlay");
+    const ctx = canvas.getContext("2d");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const message = document.getElementById("message");
+    const placeholder = document.getElementById("placeholder");
+    const liveBadge = document.getElementById("liveBadge");
+
+    let stream = null;
+    let landmarker = null;
+    let running = false;
+    let lastVideoTime = -1;
+
+    const setText = (id, value) => document.getElementById(id).textContent = value;
+    const resetMetrics = () => {
+      ["xPos","yPos","yaw","pitch","roll","distance"].forEach(id => setText(id, "—"));
+    };
+
+    function eulerDegrees(matrixData) {
+      // Face transformation matrix is 4x4. Extract an approximate Euler rotation.
+      const m = Array.from(matrixData);
+      // Matrix storage can vary by implementation; these are the common row-major indices.
+      const r00=m[0], r01=m[1], r02=m[2];
+      const r10=m[4], r11=m[5], r12=m[6];
+      const r20=m[8], r21=m[9], r22=m[10];
+      const sy = Math.sqrt(r00*r00 + r10*r10);
+      let rx, ry, rz;
+      if (sy > 1e-6) {
+        rx = Math.atan2(r21, r22);
+        ry = Math.atan2(-r20, sy);
+        rz = Math.atan2(r10, r00);
+      } else {
+        rx = Math.atan2(-r12, r11);
+        ry = Math.atan2(-r20, sy);
+        rz = 0;
+      }
+      const d = Math.PI ? 180 / Math.PI : 57.2958;
+      return { pitch: rx*d, yaw: ry*d, roll: rz*d };
+    }
+
+    async function start() {
+      startBtn.disabled = true;
+      message.textContent = "얼굴 분석 모델을 불러오는 중...";
+      try {
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+        );
+        landmarker = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+            delegate: "GPU"
+          },
+          runningMode: "VIDEO",
+          numFaces: 1,
+          outputFacialTransformationMatrixes: true
+        });
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user" },
+          audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+        placeholder.style.display = "none";
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        running = true;
+        lastVideoTime = -1;
+        liveBadge.textContent = "LIVE";
+        liveBadge.style.borderColor = "#286e54";
+        stopBtn.disabled = false;
+        message.textContent = "실행 중입니다. 정면에서 얼굴을 움직여 보세요.";
+        setText("status", "얼굴 탐색 중");
+        requestAnimationFrame(loop);
+      } catch (err) {
+        console.error(err);
+        message.textContent = "시작할 수 없습니다: " + (err?.message || err) +
+          " — localhost 또는 HTTPS에서 열고 카메라 권한을 확인하세요.";
+        startBtn.disabled = false;
+        if (landmarker) { landmarker.close(); landmarker = null; }
+        if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+      }
+    }
+
+    function loop() {
+      if (!running) return;
+      if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        }
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        try {
+          const result = landmarker.detectForVideo(video, performance.now());
+          drawAndUpdate(result);
+        } catch (e) {
+          console.error(e);
+          message.textContent = "얼굴 분석 중 오류가 발생했습니다. 페이지를 새로고침해 다시 시도해 주세요.";
+        }
+      }
+      requestAnimationFrame(loop);
+    }
+
+    function drawAndUpdate(result) {
+      const w = canvas.width, h = canvas.height;
+      const faces = result.faceLandmarks || [];
+      if (!faces.length) {
+        setText("status", "얼굴 없음");
+        resetMetrics();
+        return;
+      }
+
+      const pts = faces[0];
+      const xs = pts.map(p => p.x);
+      const ys = pts.map(p => p.y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+
+      // Video is mirrored with CSS; mirror the overlay drawing as well.
+      const bx = (1 - maxX) * w;
+      const by = minY * h;
+      const bw = (maxX - minX) * w;
+      const bh = (maxY - minY) * h;
+      const cx = bx + bw/2, cy = by + bh/2;
+
+      ctx.save();
+      ctx.strokeStyle = "#42f5a1";
+      ctx.lineWidth = Math.max(2, w/500);
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.beginPath();
+      ctx.moveTo(cx-18, cy); ctx.lineTo(cx+18, cy);
+      ctx.moveTo(cx, cy-18); ctx.lineTo(cx, cy+18);
+      ctx.stroke();
+      ctx.fillStyle = "#42f5a1";
+      ctx.font = `bold ${Math.max(14,w/70)}px system-ui`;
+      ctx.fillText("FACE TRACKED", bx, Math.max(20, by-8));
+      ctx.restore();
+
+      // Normalized screen coordinates; mirrored X so right on screen is positive.
+      const xNorm = ((1 - (minX + maxX)/2) - 0.5) * 2;
+      const yNorm = (0.5 - (minY + maxY)/2) * 2;
+      const faceWidthRatio = Math.max(0.001, maxX-minX);
+      const distanceIndex = 0.20 / faceWidthRatio;
+
+      setText("status", "추적 중");
+      setText("xPos", (xNorm >= 0 ? "+" : "") + xNorm.toFixed(3));
+      setText("yPos", (yNorm >= 0 ? "+" : "") + yNorm.toFixed(3));
+      setText("distance", distanceIndex.toFixed(2));
+
+      const matrices = result.facialTransformationMatrixes || [];
+      if (matrices.length && matrices[0].data) {
+        const angles = eulerDegrees(matrices[0].data);
+        setText("yaw", `${angles.yaw >= 0 ? "+" : ""}${angles.yaw.toFixed(1)}°`);
+        setText("pitch", `${angles.pitch >= 0 ? "+" : ""}${angles.pitch.toFixed(1)}°`);
+        setText("roll", `${angles.roll >= 0 ? "+" : ""}${angles.roll.toFixed(1)}°`);
+      } else {
+        setText("yaw", "—"); setText("pitch", "—"); setText("roll", "—");
+      }
+    }
+
+    function stop() {
+      running = false;
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }
+      video.srcObject = null;
+      if (landmarker) {
+        landmarker.close();
+        landmarker = null;
+      }
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      placeholder.style.display = "grid";
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      liveBadge.textContent = "OFFLINE";
+      setText("status", "중지됨");
+      resetMetrics();
+      message.textContent = "카메라가 중지되었습니다.";
+    }
+
+    startBtn.addEventListener("click", start);
+    stopBtn.addEventListener("click", stop);
+    window.addEventListener("beforeunload", () => {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      if (landmarker) landmarker.close();
+    });
+  </script>
+</body>
+</html>
